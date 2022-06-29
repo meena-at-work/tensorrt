@@ -145,6 +145,8 @@ int main(int argc, char* argv[]) {
   int32_t eval_iters = 1000;
   bool input_from_device = true;
   bool output_to_host = true;
+  bool frozen_graph=false;
+  bool use_tftrt=false;
   std::vector<Flag> flag_list = {
       Flag("model_path", &model_path, "graph to be executed"),
       Flag("signature_key", &signature_key, "the serving signature to use"),
@@ -153,6 +155,9 @@ int main(int argc, char* argv[]) {
       Flag("eval_iters", &eval_iters, "number of timed iterations to run"),
       Flag("input_from_device", &input_from_device, "use inputs from device, rather than host"),
       Flag("output_to_host", &output_to_host, "copy outputs to host after inference"),
+      Flag("frozen_graph", &frozen_graph, "Assume graph is frozen and use "
+                       "TF-TRT API for frozen graphs"),
+      Flag("use_tftrt", &frozen_graph, "Enable TFTRT"),
   };
   string usage = tensorflow::Flags::Usage(argv[0], flag_list);
   const bool parse_result = tensorflow::Flags::Parse(&argc, argv, flag_list);
@@ -192,6 +197,34 @@ int main(int argc, char* argv[]) {
   tensorflow::Session::CallableHandle handle;
   TFTRT_ENSURE_OK(SetupCallable(bundle.session, input_info, output_info,
                                 device->name(), input_from_device, output_to_host, &handle));
+
+
+  if (use_tftrt) {
+    LOG(INFO) << "Converting model using TF-TRT";
+    // Run TF-TRT conversion
+    tensorflow::tensorrt::TfTrtConversionParams params;
+    params.use_dynamic_shape = true;
+    params.profile_strategy = tensorflow::tensorrt::ProfileStrategy::kRange;
+    tensorflow::StatusOr<tensorflow::GraphDef> status_or_gdef;
+    if (frozen_graph) {
+      status_or_gdef = tensorflow::tensorrt::ConvertAndBuild(
+          bundle.meta_graph_def.graph_def(), input_names, output_names, inputs,
+          params);
+    } else {
+      status_or_gdef = tensorflow::tensorrt::ConvertAndBuild(
+          &bundle, signature_key, inputs_device, params);
+    }
+    if (!status_or_gdef.ok()) {
+      std::cerr << "Error converting the graph" << status_or_gdef.status()
+                << std::endl;
+      return 1;
+    }
+    tensorflow::GraphDef &converted_graph_def = status_or_gdef.ValueOrDie();
+    tensorflow::Session *session = nullptr;
+    TFTRT_ENSURE_OK(NewSession(tensorflow::SessionOptions(), &session));
+    bundle.session.reset(session);
+    TFTRT_ENSURE_OK(bundle.session->Create(converted_graph_def));
+  }
 
   // Run benchmarking
   std::vector<Tensor> outputs;
