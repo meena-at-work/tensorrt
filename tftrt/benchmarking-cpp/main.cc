@@ -155,9 +155,7 @@ int main(int argc, char* argv[]) {
       Flag("eval_iters", &eval_iters, "number of timed iterations to run"),
       Flag("input_from_device", &input_from_device, "use inputs from device, rather than host"),
       Flag("output_to_host", &output_to_host, "copy outputs to host after inference"),
-      Flag("frozen_graph", &frozen_graph, "Assume graph is frozen and use "
-                       "TF-TRT API for frozen graphs"),
-      Flag("use_tftrt", &frozen_graph, "Enable TFTRT"),
+      Flag("use_tftrt", &use_tftrt, "Enable TFTRT"),
   };
   string usage = tensorflow::Flags::Usage(argv[0], flag_list);
   const bool parse_result = tensorflow::Flags::Parse(&argc, argv, flag_list);
@@ -206,14 +204,36 @@ int main(int argc, char* argv[]) {
     params.use_dynamic_shape = true;
     params.profile_strategy = tensorflow::tensorrt::ProfileStrategy::kRange;
     tensorflow::StatusOr<tensorflow::GraphDef> status_or_gdef;
-    if (frozen_graph) {
+
+    auto get_node_names = [](std::vector<tensorflow::TensorInfo> input)-> std::vector<std::string>
+    {
+      std::vector<std::string> result;
+      for (auto const& item: input)
+      {
+        absl::string_view name = item.name();
+        // Remove tensor suffix like ":0".
+        size_t last_colon = name.find_last_of(':');
+        if (last_colon != absl::string_view::npos) {
+          name.remove_suffix(name.size() - last_colon);
+        }
+        result.push_back(std::string(name));
+        std::cout << "Found name " << name << std::endl;
+      }
+      return result;
+    };
+
+    // if (frozen_graph) {
+      const std::vector<std::string> input_names = get_node_names(input_info);
+      const std::vector<std::string> output_names = get_node_names(output_info);
+      std::vector<std::vector<tensorflow::Tensor>> inputs{inputs_device};
       status_or_gdef = tensorflow::tensorrt::ConvertAndBuild(
           bundle.meta_graph_def.graph_def(), input_names, output_names, inputs,
           params);
-    } else {
-      status_or_gdef = tensorflow::tensorrt::ConvertAndBuild(
-          &bundle, signature_key, inputs_device, params);
-    }
+    // } else {
+    //   const std::vector<tensorflow::Tensor> inputs(inputs_device);
+    //   status_or_gdef = tensorflow::tensorrt::ConvertAndBuild(
+    //       &bundle, signature_key, inputs, params);
+    // }
     if (!status_or_gdef.ok()) {
       std::cerr << "Error converting the graph" << status_or_gdef.status()
                 << std::endl;
